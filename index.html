@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>The Race of Life - O Nascimento</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial Black', sans-serif; background-color: #4a051c; touch-action: none; }
+        canvas.game { display: block; width: 100vw; height: 100vh; }
+        #score-ui {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            font-size: 50px; font-weight: 900; color: white;
+            text-shadow: 0 5px 15px rgba(0,0,0,0.5); pointer-events: none; z-index: 10;
+        }
+        #instructions {
+            position: absolute; top: 80px; width: 100%; text-align: center;
+            color: #ffb3c1; font-size: 14px; z-index: 10;
+        }
+        #controls {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            display: grid; grid-template-columns: repeat(3, 80px); grid-template-rows: repeat(2, 80px);
+            gap: 15px; z-index: 200;
+        }
+        .btn {
+            width: 80px; height: 80px; background: rgba(255, 255, 255, 0.2);
+            border: 3px solid white; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            color: white; font-size: 30px; user-select: none; cursor: pointer;
+        }
+        .btn:active { background: white; color: #ff2d55; }
+        .up { grid-column: 2; }
+        .left { grid-column: 1; grid-row: 2; }
+        .down { grid-column: 2; grid-row: 2; }
+        .right { grid-column: 3; grid-row: 2; }
+    </style>
+</head>
+<body>
+
+<div id="score-ui">0 / 100</div>
+<div id="instructions">Chegue ao óvulo para nascer!</div>
+
+<div id="controls">
+    <div class="btn up" id="m-up">▲</div>
+    <div class="btn left" id="m-left">◀</div>
+    <div class="btn down" id="m-down">▼</div>
+    <div class="btn right" id="m-right">▶</div>
+</div>
+
+<canvas class="game"></canvas>
+
+<script type="module">
+    import * as THREE from "https://esm.sh/three";
+
+    const tileSize = 42;
+    const minTile = -6;
+    const maxTile = 6;
+    const GOAL = 100;
+    let isGameOver = false, metadata = [], score = 0;
+    let position = { row: 0, tile: 0 };
+    let movesQueue = [];
+
+    const scene = new THREE.Scene();
+    const map = new THREE.Group(); scene.add(map);
+    const player = new THREE.Group(); scene.add(player);
+
+    const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector(".game"), antialias: true });
+    renderer.shadowMap.enabled = true;
+    renderer.setClearColor(0x4a051c); // Cor interna (útero/veia)
+
+    const camera = new THREE.OrthographicCamera();
+    camera.up.set(0, 0, 1);
+    camera.position.set(300, -300, 300);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(-50, -100, 200);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    function resize() {
+        const r = window.innerWidth / window.innerHeight;
+        const s = 150;
+        camera.left = -s * r; camera.right = s * r;
+        camera.top = s; camera.bottom = -s;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener('resize', resize); resize();
+
+    function buildSperma() {
+        player.clear();
+        const g = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({color: 0xffffff});
+        
+        // Cabeça
+        const head = new THREE.Mesh(new THREE.SphereGeometry(10, 16, 16), mat);
+        head.scale.y = 1.4; head.position.z = 10; head.castShadow = true;
+        g.add(head);
+
+        // Cauda
+        const tailGeo = new THREE.BoxGeometry(3, 20, 3);
+        const tail = new THREE.Mesh(tailGeo, mat);
+        tail.position.set(0, -15, 8);
+        g.add(tail);
+
+        // Olhinhos
+        const eyeGeo = new THREE.BoxGeometry(2, 2, 2);
+        const eyeMat = new THREE.MeshLambertMaterial({color: 0x000000});
+        const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(4, 8, 14); g.add(eL);
+        const eR = eL.clone(); eR.position.x = -4; g.add(eR);
+
+        player.add(g);
+    }
+
+    function createAnticorpo(dir) {
+        const obs = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ color: 0xff4d4d });
+        const core = new THREE.Mesh(new THREE.SphereGeometry(15, 8, 8), mat);
+        core.position.z = 12; core.castShadow = true;
+        obs.add(core);
+        
+        // Espinhos (Anticorpos)
+        for(let i=0; i<6; i++) {
+            const spike = new THREE.Mesh(new THREE.CylinderGeometry(1, 4, 15), mat);
+            spike.rotation.x = Math.PI/2;
+            spike.position.z = 12;
+            spike.rotation.z = (i / 6) * Math.PI * 2;
+            spike.translateY(12);
+            obs.add(spike);
+        }
+        return obs;
+    }
+
+    function addRows(n) {
+        for(let i=0; i<n; i++) {
+            const rowIdx = metadata.length + 1;
+            const isDanger = Math.random() > 0.4;
+            const row = new THREE.Group(); row.position.y = rowIdx * tileSize;
+            let data = { type: isDanger?"danger":"safe", obstacles: [], walls: [] };
+
+            if(isDanger) {
+                // Corredor biológico ativo
+                const bg = new THREE.Mesh(new THREE.PlaneGeometry(1200, tileSize), new THREE.MeshLambertMaterial({color:0x6b0f2a}));
+                bg.receiveShadow = true; row.add(bg);
+                data.dir = Math.random() > 0.5; 
+                data.speed = 100 + Math.random()*150;
+                const obs = createAnticorpo(data.dir); row.add(obs); 
+                data.obstacles.push({ ref: obs });
+            } else {
+                // Tecvido seguro (Gordura/Células)
+                const bg = new THREE.Mesh(new THREE.BoxGeometry(1200, tileSize, 4), new THREE.MeshLambertMaterial({color:0x8e1b3a}));
+                bg.receiveShadow = true; row.add(bg);
+                // Pequenas barreiras (células)
+                for(let t=0; t<2; t++) {
+                    const tIdx = Math.floor(Math.random()*(maxTile-minTile)) + minTile;
+                    if(tIdx !== 0 || rowIdx > 5) { 
+                        const cell = new THREE.Mesh(new THREE.SphereGeometry(18, 8, 8), new THREE.MeshLambertMaterial({color: 0xd43f66}));
+                        cell.position.x = tIdx * tileSize; cell.position.z = 10;
+                        row.add(cell); data.walls.push(tIdx); 
+                    }
+                }
+            }
+            metadata.push(data); map.add(row);
+        }
+    }
+
+    function move(d) {
+        if(isGameOver || movesQueue.length > 0) return;
+        let tRow = position.row + (d==="forward"?1:d==="backward"?-1:0);
+        let tTile = position.tile + (d==="right"?1:d==="left"?-1:0);
+        if(tRow < 0 || tTile < minTile || tTile > maxTile) return;
+        if(metadata[tRow-1]?.type === "safe" && metadata[tRow-1].walls.includes(tTile)) return;
+        
+        if(d === "forward") player.rotation.z = 0;
+        if(d === "backward") player.rotation.z = Math.PI;
+        if(d === "left") player.rotation.z = Math.PI / 2;
+        if(d === "right") player.rotation.z = -Math.PI / 2;
+        
+        movesQueue.push({ dir: d, tX: tTile * tileSize, tY: tRow * tileSize, progress: 0 });
+    }
+
+    function checkVictory() {
+        if(score >= GOAL && !isGameOver) {
+            isGameOver = true;
+            document.getElementById('score-ui').innerText = "VOCÊ NASCEU! 👶";
+            document.body.style.transition = "background 2s";
+            document.body.style.backgroundColor = "#ffffff";
+            setTimeout(() => {
+                alert("Parabéns! Você foi o espermatozoide mais rápido e acaba de nascer!");
+                window.location.reload();
+            }, 3000);
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if(!isGameOver) {
+            metadata.forEach((r, idx) => {
+                const rowY = (idx + 1) * tileSize;
+                r.obstacles?.forEach(v => {
+                    v.ref.position.x += (r.dir?1:-1) * r.speed * 0.016;
+                    if(v.ref.position.x > 500) v.ref.position.x = -500;
+                    if(v.ref.position.x < -500) v.ref.position.x = 500;
+                    const dx = Math.abs(v.ref.position.x - player.position.x);
+                    const dy = Math.abs(rowY - player.position.y);
+                    if(dx < 35 && dy < 20) {
+                        isGameOver = true; 
+                        document.getElementById('score-ui').innerText = "PERDEU!";
+                        setTimeout(() => window.location.reload(), 800);
+                    }
+                });
+            });
+            if(movesQueue.length > 0) {
+                const m = movesQueue[0]; m.progress += 0.2;
+                player.position.x = THREE.MathUtils.lerp(position.tile * tileSize, m.tX, m.progress);
+                player.position.y = THREE.MathUtils.lerp(position.row * tileSize, m.tY, m.progress);
+                player.position.z = Math.sin(m.progress * Math.PI) * 15;
+                if(m.progress >= 1) {
+                    player.position.set(m.tX, m.tY, 0);
+                    position.row += (m.dir==="forward"?1:m.dir==="backward"?-1:0);
+                    position.tile += (m.dir==="right"?1:m.dir==="left"?-1:0);
+                    movesQueue.shift(); 
+                    score = position.row;
+                    document.getElementById('score-ui').innerText = score + " / " + GOAL;
+                    if(position.row > metadata.length - 15) addRows(10);
+                    checkVictory();
+                }
+            }
+        }
+        camera.position.y = player.position.y - 250; 
+        camera.position.x = player.position.x + 250;
+        camera.lookAt(player.position.x, player.position.y, 0); 
+        renderer.render(scene, camera);
+    }
+
+    // Controles
+    window.onkeydown = (e) => {
+        const key = e.key.toLowerCase();
+        const movements = { arrowup: "forward", w: "forward", arrowdown: "backward", s: "backward", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
+        if(movements[key]) move(movements[key]);
+    };
+
+    const setupBtn = (id, dir) => {
+        const el = document.getElementById(id);
+        el.addEventListener('touchstart', (e) => { e.preventDefault(); move(dir); });
+        el.addEventListener('mousedown', (e) => { move(dir); });
+    };
+    setupBtn('m-up', 'forward'); setupBtn('m-down', 'backward');
+    setupBtn('m-left', 'left'); setupBtn('m-right', 'right');
+
+    function init() {
+        for(let i=0; i>-5; i--) {
+            const g = new THREE.Mesh(new THREE.BoxGeometry(1200,tileSize,2), new THREE.MeshLambertMaterial({color:0x8e1b3a}));
+            g.position.y = i * tileSize; map.add(g);
+        }
+        addRows(30); 
+        buildSperma(); 
+        animate();
+    }
+    init();
+</script>
+</body>
+</html>
